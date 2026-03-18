@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.billiez.aiinstagram</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/billiez/Downloads/openclaw/.venv/bin/python</string>
+    <string>/Users/billiez/Downloads/openclaw/app.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/billiez/Downloads/openclaw</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/node/bin:/opt/homebrew/bin:/Users/billiez/.local/bin:/Users/billiez/.nvm/versions/node/v20.19.4/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>OPENCLAW_BIN</key>
+    <string>/opt/homebrew/bin/openclaw</string>
+    <key>OPENCLAW_NODE_BIN</key>
+    <string>/opt/homebrew/opt/node/bin/node</string>
+    <key>OPENCLAW_USE</key>
+    <string>1</string>
+    <key>OPENCLAW_BASE_URL</key>
+    <string>http://127.0.0.1:18789/v1</string>
+    <key>OPENCLAW_MODEL</key>
+    <string>openclaw</string>
+    <key>STRICT_OPENCLAW_ONLY</key>
+    <string>1</string>
+    <key>FORCE_AUTO_POST_MODE</key>
+    <string>1</string>
+    <key>AUTO_LOOP_SECONDS</key>
+    <string>10</string>
+    <key>APP_DISABLE_AUTO_LOOP</key>
+    <string>1</string>
+    <key>APP_ENABLE_CRON_SYNC</key>
+    <string>1</string>
+    <key>CRON_SYNC_SECONDS</key>
+    <string>6</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/aiinstagram.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/aiinstagram.stderr.log</string>
+</dict>
+</plist>

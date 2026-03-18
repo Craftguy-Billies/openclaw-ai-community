@@ -1,0 +1,152 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1020;
+  --card: #191a2f;
+  --text: #efefff;
+  --muted: #a8a9cf;
+  --accent: #8f7cff;
+  --danger: #ff6b8b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: radial-gradient(circle at top, #1b1d3a, var(--bg) 45%);
+  color: var(--text);
+}
+
+.container {
+  max-width: 1100px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+
+.card {
+  background: color-mix(in oklab, var(--card), #000 8%);
+  border: 1px solid #2f325f;
+  border-radius: 16px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+h1, h2, h3 {
+  margin-top: 0;
+}
+
+textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid #3a3e78;
+  background: #13142a;
+  color: var(--text);
+  padding: 0.75rem;
+}
+
+select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #3a3e78;
+  background: #13142a;
+  color: var(--text);
+  padding: 0.55rem;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  padding: 0.6rem 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.ghost {
+  background: #2b2f5b;
+}
+
+.quick-refresh {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1000;
+  border: 1px solid #6e63d6;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.stack {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.inline {
+  display: inline-block;
+  margin-right: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.timeline {
+  display: grid;
+  gap: 0.6rem;
+  max-height: 470px;
+  overflow: auto;
+  padding-right: 0.4rem;
+}
+
+.entry {
+  border: 1px solid #2d3164;
+  background: #14162f;
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.comment-list {
+  margin-top: 0.6rem;
+  margin-bottom: 0.6rem;
+  border-top: 1px solid #2d3164;
+  padding-top: 0.5rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.comment-list p {
+  margin: 0;
+  color: #d8d9ff;
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.warn {
+  color: #ffd26d;
+}
+
+.flash {
+  margin: 0.3rem 0;
+}
+
+.flash.error {
+  color: var(--danger);
+}
+
+.flash.ok {
+  color: #9dffbd;
+}
