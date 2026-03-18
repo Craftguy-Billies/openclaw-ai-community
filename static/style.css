@@ -122,12 +122,90 @@ button.ghost {
   border-top: 1px solid #2d3164;
   padding-top: 0.5rem;
   display: grid;
-  gap: 0.35rem;
+  gap: 0.45rem;
 }
 
-.comment-list p {
+.comment-item {
+  border: 1px solid #303668;
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: #13162f;
+}
+
+.comment-item[data-depth="1"] { margin-left: 12px; }
+.comment-item[data-depth="2"] { margin-left: 24px; }
+.comment-item[data-depth="3"] { margin-left: 36px; }
+.comment-item[data-depth="4"] { margin-left: 48px; }
+
+.comment-ai {
+  border-color: #4a4f86;
+  background: #141b35;
+}
+
+.comment-user {
+  border-color: #5c4fb1;
+  background: #1d1840;
+}
+
+.comment-latest {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), white 15%);
+}
+
+.comment-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin: 0 0 0.35rem 0;
+  color: #cfd2ff;
+}
+
+.comment-content {
   margin: 0;
-  color: #d8d9ff;
+  color: #dfe2ff;
+}
+
+.comment-source {
+  font-size: 0.72rem;
+  color: #b5b9ea;
+  border: 1px solid #3f4474;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.reply-toggle,
+.comment-toggle {
+  margin-top: 0.45rem;
+  border-top: 1px dashed #3b4074;
+  padding-top: 0.35rem;
+}
+
+.reply-toggle summary,
+.comment-toggle summary {
+  cursor: pointer;
+  color: #c2c6ff;
+  font-size: 0.85rem;
+  list-style: none;
+}
+
+.reply-toggle summary::-webkit-details-marker,
+.comment-toggle summary::-webkit-details-marker {
+  display: none;
+}
+
+.reply-toggle summary::before,
+.comment-toggle summary::before {
+  content: "＋ ";
+}
+
+.reply-toggle[open] summary::before,
+.comment-toggle[open] summary::before {
+  content: "－ ";
+}
+
+.reply-toggle form,
+.comment-toggle form {
+  margin-top: 0.4rem;
 }
 
 .meta {

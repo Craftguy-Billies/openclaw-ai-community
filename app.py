@@ -52,6 +52,8 @@ HIGH_ACTIVITY_PROFILES = {
 }
 SLOW_PROFILE_REPLY_CHANCE = float(os.environ.get("SLOW_PROFILE_REPLY_CHANCE", "0.35"))
 SLOW_PROFILE_COMMENT_REPLY_CHANCE = float(os.environ.get("SLOW_PROFILE_COMMENT_REPLY_CHANCE", "0.3"))
+PEER_REPLY_TO_COMMENT_CHANCE = float(os.environ.get("PEER_REPLY_TO_COMMENT_CHANCE", "1.0"))
+AUTO_ACTIVITY_REPLY_TO_COMMENT_CHANCE = float(os.environ.get("AUTO_ACTIVITY_REPLY_TO_COMMENT_CHANCE", "1.0"))
 COMMUNITY_BANNED_TERMS = {
     term.strip().lower()
     for term in os.environ.get("COMMUNITY_BANNED_TERMS", "billy").split(",")
@@ -1127,16 +1129,21 @@ def process_pending_comment_replies(limit: int = 5) -> int:
             memory = agent_memory_context(int(author["id"]), include_user_messages=False)
             recent_lines = recent_author_comment_texts(str(author["name"]), limit=5)
             recent_block = "\n".join([f"- {item}" for item in recent_lines]) if recent_lines else "None"
+            all_post_comments = fetch_post_comments_rows(post_id)
+            thread_context = thread_context_lines(int(target_comment["id"]), all_post_comments)
             reply_raw = backend.generate(
                 dict(author),
                 (
-                    f"Reply naturally to this community comment: '{user_text}'.\n"
+                    f"Reply naturally to this specific community comment #{int(target_comment['id'])}: '{user_text}'.\n"
                     f"Comment author: {target_label}.\n"
+                    f"Post owner: {post['author_name']}.\n"
+                    f"Thread context (root -> target):\n{thread_context}\n"
                     f"{relationship_rule}\n"
                     f"Voice rules: {persona_voice_rules(author)}\n"
                     f"Long-term memory:\n{memory}\n"
                     f"Recent replies to avoid repeating:\n{recent_block}\n"
                     "Do not use feed blocks. Keep it brief and specific. "
+                    "Reply to the target comment content directly; do not treat this as a generic post reply. "
                     "If comment author is not 'You', never flirt and never use romantic pet names."
                 ),
                 max_tokens=90,
@@ -1162,12 +1169,14 @@ def process_pending_comment_replies(limit: int = 5) -> int:
                 retry_raw = backend.generate(
                     dict(author),
                     (
-                        f"Write one unique direct reply to: '{user_text}'.\n"
+                        f"Write one unique direct reply to target comment #{int(target_comment['id'])}: '{user_text}'.\n"
                         f"Comment author: {target_label}.\n"
+                        f"Post owner: {post['author_name']}.\n"
+                        f"Thread context (root -> target):\n{thread_context}\n"
                         f"{relationship_rule}\n"
                         f"Voice rules: {persona_voice_rules(author)}\n"
                         f"Avoid these prior lines:\n{recent_block}\n"
-                        "No generic praise. No feed blocks. "
+                        "No generic praise. No feed blocks. Reply directly to the target comment semantics. "
                         "If comment author is not 'You', never flirt and never use romantic pet names."
                     ),
                     max_tokens=90,
@@ -1547,6 +1556,102 @@ def build_comment(agent: sqlite3.Row, post_caption: str, target_post_author_labe
     return backend.generate(dict(agent), prompt, max_tokens=60, temperature=0.8, session_scope=comment_scope)
 
 
+def fetch_post_comments_rows(post_id: int) -> List[sqlite3.Row]:
+    with DB_LOCK:
+        conn = db_connection()
+        rows = conn.execute(
+            "SELECT * FROM comments WHERE post_id = ? ORDER BY id ASC",
+            (int(post_id),),
+        ).fetchall()
+        conn.close()
+    return rows
+
+
+def thread_context_lines(target_comment_id: int, comments_rows: List[sqlite3.Row], max_depth: int = 8) -> str:
+    if not comments_rows:
+        return "None"
+    by_id = {int(item["id"]): item for item in comments_rows}
+    chain: List[sqlite3.Row] = []
+    current_id: Optional[int] = int(target_comment_id)
+    depth = 0
+    while current_id is not None and current_id in by_id and depth < max_depth:
+        node = by_id[current_id]
+        chain.append(node)
+        parent_id = node["parent_comment_id"]
+        current_id = int(parent_id) if parent_id is not None else None
+        depth += 1
+    chain.reverse()
+    if not chain:
+        return "None"
+    lines = [f"- #{int(item['id'])} {item['author_label']}: {item['content']}" for item in chain]
+    return "\n".join(lines)
+
+
+def build_comment_reply(
+    agent: sqlite3.Row,
+    post_caption: str,
+    post_author_label: str,
+    target_comment: sqlite3.Row,
+    all_post_comments: List[sqlite3.Row],
+) -> str:
+    memory = agent_memory_context(int(agent["id"]), include_user_messages=False)
+    recent_self_comments = recent_author_comments(str(agent["name"]))
+    rules = persona_voice_rules(agent)
+    target_label = str(target_comment["author_label"])
+    target_text = str(target_comment["content"])
+    relationship_rule = community_relationship_instruction(str(agent["name"]), target_label)
+    thread_context = thread_context_lines(int(target_comment["id"]), all_post_comments)
+    scope = "community-comment-reply-user" if is_user_target(target_label) else "community-comment-reply-platonic"
+
+    prompt = (
+        f"Write one natural short Instagram reply-comment as {agent['name']} ({agent['username']}).\n"
+        f"You are replying to comment #{int(target_comment['id'])} by {target_label}: '{target_text}'.\n"
+        f"Post owner: {post_author_label}. Original post caption: '{post_caption}'.\n"
+        f"Thread context (root -> target):\n{thread_context}\n"
+        f"{relationship_rule}\n"
+        f"Voice rules: {rules}\n"
+        f"Long-term memory:\n{memory}\n"
+        f"Recent comments you must not repeat:\n{recent_self_comments}\n"
+        "Reply specifically to the target comment, not a generic post reply. "
+        "Do not address other participants as if they wrote the target comment. "
+        "Max 18 words. Do not use feed blocks or labels."
+    )
+    return backend.generate(dict(agent), prompt, max_tokens=70, temperature=0.78, session_scope=scope)
+
+
+def parse_generation_json(text: str) -> Optional[Dict[str, object]]:
+    try:
+        return extract_json_object(text)
+    except Exception:
+        return None
+
+
+def compact_comment_targets(comments_rows: List[sqlite3.Row], limit: int = 10) -> str:
+    if not comments_rows:
+        return "None"
+    items = comments_rows[-limit:]
+    lines = [
+        f"- id={int(item['id'])}, author={item['author_label']}, parent={item['parent_comment_id']}, text={str(item['content'])[:140]}"
+        for item in items
+    ]
+    return "\n".join(lines)
+
+
+def planner_agent_for_scope(agents: List[sqlite3.Row]) -> Optional[sqlite3.Row]:
+    if not agents:
+        return None
+    for item in agents:
+        if is_high_activity_profile(item):
+            return item
+    return agents[0]
+
+
+def pick_latest_reply_target(reply_targets: List[sqlite3.Row]) -> Optional[sqlite3.Row]:
+    if not reply_targets:
+        return None
+    return max(reply_targets, key=lambda item: int(item["id"]))
+
+
 def auto_peer_replies_for_post(post_id: int, post_author_id: int, post_caption: str) -> int:
     agents = get_agents()
     candidates = [item for item in agents if int(item["id"]) != int(post_author_id)]
@@ -1559,38 +1664,99 @@ def auto_peer_replies_for_post(post_id: int, post_author_id: int, post_caption: 
             post_author_name = str(item["name"])
             break
 
-    high_activity = [item for item in candidates if is_high_activity_profile(item)]
-    low_activity = [item for item in candidates if not is_high_activity_profile(item)]
+    comment_targets = fetch_post_comments_rows(post_id)
+    candidate_names = ", ".join([str(item["name"]) for item in candidates])
+    target_lines = compact_comment_targets(comment_targets)
 
-    selected: List[sqlite3.Row] = []
-    random.shuffle(high_activity)
-    random.shuffle(low_activity)
+    planner = planner_agent_for_scope(candidates)
+    planned_actions: List[Dict[str, object]] = []
+    if planner:
+        planner_prompt = (
+            "You are the peer-reply orchestrator for one post. Return JSON only with schema:\n"
+            "{\"actions\":[{\"actor\":\"<candidate name>\",\"target\":\"post|comment\",\"comment_id\":<int optional>,\"content\":\"<optional>\"}]}\n"
+            f"Post id: {post_id}, author: {post_author_name}, caption: '{post_caption}'.\n"
+            f"Candidates: {candidate_names}\n"
+            f"Comment targets:\n{target_lines}\n"
+            "Rules: choose 1-3 actions, prefer target='comment' when comments exist, never invent ids, avoid duplicate actors."
+        )
+        raw = backend.generate(dict(planner), planner_prompt, max_tokens=260, temperature=0.35, session_scope="peer-reply-planner")
+        payload = parse_generation_json(raw) or {}
+        candidate_map = {str(item["name"]): item for item in candidates}
+        used: set[str] = set()
+        for item in payload.get("actions", []) if isinstance(payload.get("actions", []), list) else []:
+            actor_name = str(item.get("actor", "")).strip()
+            if not actor_name or actor_name not in candidate_map or actor_name in used:
+                continue
+            target = str(item.get("target", "post")).strip().lower()
+            if target not in {"post", "comment"}:
+                target = "post"
+            comment_id = int(item.get("comment_id") or 0)
+            if target == "comment" and comment_id > 0:
+                if not any(int(row["id"]) == comment_id for row in comment_targets):
+                    comment_id = 0
+            planned_actions.append(
+                {
+                    "actor": actor_name,
+                    "target": target,
+                    "comment_id": comment_id,
+                    "content": str(item.get("content") or "").strip(),
+                }
+            )
+            used.add(actor_name)
+            if len(planned_actions) >= 3:
+                break
 
-    if high_activity:
-        target = 1 if len(high_activity) == 1 else random.randint(1, 2)
-        selected.extend(high_activity[:target])
-        if low_activity and random.random() <= SLOW_PROFILE_REPLY_CHANCE:
-            selected.append(low_activity[0])
-    else:
-        random.shuffle(candidates)
-        target = 1 if len(candidates) == 1 else random.randint(1, 2)
-        selected = candidates[:target]
+    if not planned_actions:
+        fallback_target_id = int(comment_targets[-1]["id"]) if comment_targets else 0
+        planned_actions = [
+            {
+                "actor": str(candidates[0]["name"]),
+                "target": "comment" if fallback_target_id else "post",
+                "comment_id": fallback_target_id,
+                "content": "",
+            }
+        ]
 
     created = 0
 
-    for commenter in selected:
+    for action in planned_actions:
         try:
+            commenter = get_agent_by_name(str(action.get("actor") or ""))
+            if not commenter:
+                continue
             generation_mode = "openclaw-primary"
-            raw_comment = build_comment(commenter, post_caption, target_post_author_label=post_author_name)
+            all_comments = fetch_post_comments_rows(post_id)
+            reply_targets = [item for item in all_comments if str(item["author_label"]).strip().lower() != str(commenter["name"]).strip().lower()]
+
+            target_comment: Optional[sqlite3.Row] = None
+            if str(action.get("target", "post")).lower() == "comment":
+                requested_comment_id = int(action.get("comment_id") or 0)
+                if requested_comment_id > 0:
+                    for row in reply_targets:
+                        if int(row["id"]) == requested_comment_id:
+                            target_comment = row
+                            break
+                if target_comment is None:
+                    target_comment = pick_latest_reply_target(reply_targets)
+
+            predefined_content = str(action.get("content") or "").strip()
+            if predefined_content:
+                raw_comment = predefined_content
+            elif target_comment is not None:
+                raw_comment = build_comment_reply(
+                    commenter,
+                    post_caption=post_caption,
+                    post_author_label=post_author_name,
+                    target_comment=target_comment,
+                    all_post_comments=all_comments,
+                )
+            else:
+                raw_comment = build_comment(commenter, post_caption, target_post_author_label=post_author_name)
+
             clean_comment, _ = sanitize_agent_reply(raw_comment)
             before_rewrite = clean_comment
-            clean_comment = openclaw_platonic_rewrite(
-                commenter,
-                clean_comment,
-                post_author_name,
-                max_words=18,
-                session_scope="community-comment-platonic-rewrite",
-            )
+            rewrite_target = str(target_comment["author_label"]) if target_comment is not None else post_author_name
+            clean_comment = openclaw_platonic_rewrite(commenter, clean_comment, rewrite_target, max_words=18, session_scope="community-comment-platonic-rewrite")
             if clean_comment.strip() and clean_comment.strip() != before_rewrite.strip():
                 generation_mode = "openclaw-platonic-rewrite"
 
@@ -1617,7 +1783,7 @@ def auto_peer_replies_for_post(post_id: int, post_author_id: int, post_caption: 
                     clean_comment = openclaw_platonic_rewrite(
                         commenter,
                         clean_comment,
-                        post_author_name,
+                        rewrite_target,
                         max_words=18,
                         session_scope="community-comment-platonic-rewrite",
                     )
@@ -1632,7 +1798,13 @@ def auto_peer_replies_for_post(post_id: int, post_author_id: int, post_caption: 
                 generation_mode = "fallback-template"
 
             source_tag = f"openclaw-peer-auto:{generation_mode}"
-            create_comment(post_id, commenter["name"], clean_comment, source_tag)
+            create_comment(
+                post_id,
+                commenter["name"],
+                clean_comment,
+                source_tag,
+                parent_comment_id=int(target_comment["id"]) if target_comment is not None else None,
+            )
             add_memory_event(
                 int(commenter["id"]),
                 "comment",
@@ -1665,10 +1837,163 @@ def random_location() -> str:
     return random.choice(options)
 
 
+def openclaw_plan_auto_activity(agents: List[sqlite3.Row], latest_post: Optional[sqlite3.Row]) -> Optional[Dict[str, object]]:
+    planner_agent = planner_agent_for_scope(agents)
+    if not planner_agent:
+        return None
+
+    agent_names = ", ".join([str(item["name"]) for item in agents])
+    latest_post_block = "None"
+    comment_targets = "None"
+    if latest_post is not None:
+        latest_post_block = (
+            f"id={int(latest_post['id'])}, author={latest_post['author_name']}, "
+            f"caption={str(latest_post['caption'])[:180]}"
+        )
+        comments_rows = fetch_post_comments_rows(int(latest_post["id"]))
+        comment_targets = compact_comment_targets(comments_rows)
+
+    prompt = (
+        "You are the community orchestrator. Decide exactly one next action.\n"
+        "Return JSON only with schema:\n"
+        "{\"action\":\"no_action|create_post|comment_post|reply_comment\",\"actor\":\"<agent name>\","
+        "\"post_id\":<int optional>,\"comment_id\":<int optional>,\"location\":\"<optional>\",\"content\":\"<optional>\"}\n"
+        f"Available actors: {agent_names}\n"
+        f"Latest post: {latest_post_block}\n"
+        f"Latest post comment targets:\n{comment_targets}\n"
+        "Rules: Prefer reply_comment when comments exist. Never invent ids. Keep actions realistic."
+    )
+    raw = backend.generate(dict(planner_agent), prompt, max_tokens=240, temperature=0.35, session_scope="community-planner")
+    return parse_generation_json(raw)
+
+
+def execute_openclaw_plan(plan: Dict[str, object], agents: List[sqlite3.Row], latest_post: Optional[sqlite3.Row]) -> str:
+    if not plan:
+        return "planner-empty"
+
+    action = str(plan.get("action", "no_action")).strip().lower()
+    actor_name = str(plan.get("actor", "")).strip()
+    actor = get_agent_by_name(actor_name) if actor_name else None
+    if not actor and agents:
+        actor = planner_agent_for_scope(agents)
+    if not actor:
+        return "planner-no-actor"
+
+    if action == "no_action":
+        return "planner-no-action"
+
+    if action == "create_post":
+        location = str(plan.get("location") or "").strip() or random_location()
+        content = str(plan.get("content") or "").strip()
+        if not content:
+            content = build_caption(actor, "share a real daily-life update")
+        post_id = create_post(int(actor["id"]), location, content, "community-auto-planned")
+        add_memory_event(int(actor["id"]), "post", f"Posted: {content}", f"community-auto-planned:post:{post_id}")
+        return f"planner-post:{actor['name']}"
+
+    if latest_post is None:
+        content = build_caption(actor, "share a real daily-life update")
+        post_id = create_post(int(actor["id"]), random_location(), content, "community-auto-planned")
+        add_memory_event(int(actor["id"]), "post", f"Posted: {content}", f"community-auto-planned:post:{post_id}")
+        return f"planner-post:{actor['name']}"
+
+    post_id = int(plan.get("post_id") or int(latest_post["id"]))
+
+    with DB_LOCK:
+        conn = db_connection()
+        post_row = conn.execute(
+            "SELECT p.*, a.name AS author_name FROM posts p JOIN agents a ON a.id = p.agent_id WHERE p.id = ?",
+            (post_id,),
+        ).fetchone()
+        conn.close()
+    if not post_row:
+        post_row = latest_post
+        post_id = int(post_row["id"])
+
+    if action == "comment_post":
+        content = str(plan.get("content") or "").strip()
+        if not content:
+            content = build_comment(actor, str(post_row["caption"]), target_post_author_label=str(post_row["author_name"]))
+        content, _ = sanitize_agent_reply(content)
+        content = openclaw_platonic_rewrite(
+            actor,
+            content,
+            str(post_row["author_name"]),
+            max_words=18,
+            session_scope="community-auto-platonic-rewrite",
+        )
+        create_comment(post_id, actor["name"], content, "community-auto-planned")
+        add_memory_event(int(actor["id"]), "comment", f"Commented on post #{post_id}: {content}", "community-auto-planned:comment")
+        return f"planner-comment:{actor['name']}"
+
+    if action == "reply_comment":
+        comment_id = int(plan.get("comment_id") or 0)
+        with DB_LOCK:
+            conn = db_connection()
+            target_comment = conn.execute("SELECT * FROM comments WHERE id = ? AND post_id = ?", (comment_id, post_id)).fetchone()
+            conn.close()
+        if not target_comment:
+            candidates = fetch_post_comments_rows(post_id)
+            candidates = [
+                item
+                for item in candidates
+                if str(item["author_label"]).strip().lower() != str(actor["name"]).strip().lower()
+            ]
+            target_comment = pick_latest_reply_target(candidates)
+        if not target_comment:
+            return "planner-no-target-comment"
+
+        content = str(plan.get("content") or "").strip()
+        if not content:
+            all_comments = fetch_post_comments_rows(post_id)
+            content = build_comment_reply(
+                actor,
+                post_caption=str(post_row["caption"]),
+                post_author_label=str(post_row["author_name"]),
+                target_comment=target_comment,
+                all_post_comments=all_comments,
+            )
+        content, _ = sanitize_agent_reply(content)
+        content = openclaw_platonic_rewrite(
+            actor,
+            content,
+            str(target_comment["author_label"]),
+            max_words=18,
+            session_scope="community-auto-platonic-rewrite",
+        )
+        create_comment(post_id, actor["name"], content, "community-auto-reply-planned", parent_comment_id=int(target_comment["id"]))
+        add_memory_event(int(actor["id"]), "comment", f"Replied in post #{post_id}: {content}", "community-auto-reply-planned")
+        return f"planner-reply:{actor['name']}"
+
+    return "planner-unknown-action"
+
+
 def auto_activity_step() -> str:
     agents = get_agents()
     if not agents:
         return "no agents"
+
+    with DB_LOCK:
+        conn = db_connection()
+        latest_post = conn.execute(
+            """
+            SELECT p.*, a.name AS author_name
+            FROM posts p
+            JOIN agents a ON a.id = p.agent_id
+            ORDER BY p.id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+
+    if backend.use_openclaw and not backend.force_fake:
+        try:
+            plan = openclaw_plan_auto_activity(agents, latest_post)
+            if plan:
+                return execute_openclaw_plan(plan, agents, latest_post)
+        except Exception:
+            if backend.strict_openclaw_only:
+                raise
 
     if backend.use_openclaw and not backend.force_fake:
         actor = random.choice(agents)
@@ -1717,19 +2042,6 @@ def auto_activity_step() -> str:
     if backend.strict_openclaw_only:
         return "strict-openclaw-required"
 
-    with DB_LOCK:
-        conn = db_connection()
-        latest_post = conn.execute(
-            """
-            SELECT p.*, a.name AS author_name
-            FROM posts p
-            JOIN agents a ON a.id = p.agent_id
-            ORDER BY p.id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        conn.close()
-
     if latest_post is None or random.random() < 0.58:
         author = random.choice(agents)
         caption = build_caption(author, "share a real daily-life update")
@@ -1741,8 +2053,57 @@ def auto_activity_step() -> str:
     if not candidate_commenters:
         return "no commenter"
     commenter = random.choice(candidate_commenters)
-    content = build_comment(commenter, latest_post["caption"], target_post_author_label=str(latest_post["author_name"]))
-    create_comment(int(latest_post["id"]), commenter["name"], content, "community-auto")
+
+    post_comments = fetch_post_comments_rows(int(latest_post["id"]))
+    reply_targets = [
+        item
+        for item in post_comments
+        if str(item["author_label"]).strip().lower() != str(commenter["name"]).strip().lower()
+    ]
+
+    target_comment: Optional[sqlite3.Row] = None
+    if reply_targets and random.random() < AUTO_ACTIVITY_REPLY_TO_COMMENT_CHANCE:
+        target_comment = pick_latest_reply_target(reply_targets)
+
+    if target_comment is not None:
+        raw_content = build_comment_reply(
+            commenter,
+            post_caption=str(latest_post["caption"]),
+            post_author_label=str(latest_post["author_name"]),
+            target_comment=target_comment,
+            all_post_comments=post_comments,
+        )
+        content, _ = sanitize_agent_reply(raw_content)
+        content = openclaw_platonic_rewrite(
+            commenter,
+            content,
+            str(target_comment["author_label"]),
+            max_words=18,
+            session_scope="community-auto-platonic-rewrite",
+        )
+        create_comment(
+            int(latest_post["id"]),
+            commenter["name"],
+            content,
+            "community-auto-reply",
+            parent_comment_id=int(target_comment["id"]),
+        )
+    else:
+        raw_content = build_comment(
+            commenter,
+            str(latest_post["caption"]),
+            target_post_author_label=str(latest_post["author_name"]),
+        )
+        content, _ = sanitize_agent_reply(raw_content)
+        content = openclaw_platonic_rewrite(
+            commenter,
+            content,
+            str(latest_post["author_name"]),
+            max_words=18,
+            session_scope="community-auto-platonic-rewrite",
+        )
+        create_comment(int(latest_post["id"]), commenter["name"], content, "community-auto")
+
     add_memory_event(
         int(commenter["id"]),
         "comment",

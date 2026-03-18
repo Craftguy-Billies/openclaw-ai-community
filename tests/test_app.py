@@ -253,6 +253,130 @@ class AppRoutesTest(unittest.TestCase):
         finally:
             backend._openclaw_cli = original_cli
 
+    def test_thread_context_lines_include_target_chain(self):
+        feed = app_module.fetch_feed()
+        self.assertGreaterEqual(len(feed), 1)
+        post_id = int(feed[0]["id"])
+
+        root_id = app_module.create_comment(post_id, "Nahida", "root", "test")
+        child_id = app_module.create_comment(post_id, "Nilou", "child", "test", parent_comment_id=root_id)
+        grandchild_id = app_module.create_comment(post_id, "You", "grandchild", "test", parent_comment_id=child_id)
+
+        rows = app_module.fetch_post_comments_rows(post_id)
+        context = app_module.thread_context_lines(grandchild_id, rows)
+        self.assertIn(f"#{root_id} Nahida: root", context)
+        self.assertIn(f"#{child_id} Nilou: child", context)
+        self.assertIn(f"#{grandchild_id} You: grandchild", context)
+
+    def test_auto_peer_replies_can_reply_existing_comment(self):
+        feed = app_module.fetch_feed()
+        self.assertGreaterEqual(len(feed), 1)
+        post = feed[0]
+        post_id = int(post["id"])
+        post_author_name = post["author_name"]
+        post_author = app_module.get_agent_by_name(post_author_name)
+        self.assertIsNotNone(post_author)
+
+        existing_id = app_module.create_comment(post_id, "You", "thread start", "human")
+
+        original_random = app_module.random.random
+        original_choice = app_module.random.choice
+        original_generate = app_module.backend.generate
+
+        def fake_random():
+            return 0.0
+
+        def fake_choice(seq):
+            for item in seq:
+                if isinstance(item, str):
+                    continue
+                if str(item["author_label"]) == "You":
+                    return item
+            return seq[0]
+
+        def fake_generate(agent_payload, prompt, **kwargs):
+            if "Rewrite this community message" in prompt:
+                return "thanks for sharing this"
+            return "thanks for sharing this"
+
+        app_module.random.random = fake_random
+        app_module.random.choice = fake_choice
+        app_module.backend.generate = fake_generate
+        try:
+            created = app_module.auto_peer_replies_for_post(post_id, int(post_author["id"]), post["caption"])
+        finally:
+            app_module.random.random = original_random
+            app_module.random.choice = original_choice
+            app_module.backend.generate = original_generate
+
+        self.assertGreaterEqual(created, 1)
+        with app_module.DB_LOCK:
+            conn = app_module.db_connection()
+            nested = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_comment_id = ? AND source LIKE 'openclaw-peer-auto:%'",
+                (post_id, existing_id),
+            ).fetchone()[0]
+            conn.close()
+        self.assertGreaterEqual(nested, 1)
+
+    def test_auto_activity_step_can_reply_existing_comment(self):
+        feed = app_module.fetch_feed()
+        self.assertGreaterEqual(len(feed), 1)
+        post = feed[0]
+        post_id = int(post["id"])
+
+        target_comment_id = app_module.create_comment(post_id, "You", "please reply to this", "human")
+
+        original_random = app_module.random.random
+        original_choice = app_module.random.choice
+        original_generate = app_module.backend.generate
+
+        def fake_random():
+            return 0.9
+
+        def fake_choice(seq):
+            if not seq:
+                return None
+            first = seq[0]
+            if isinstance(first, (int, float, str)):
+                return seq[0]
+            try:
+                keys = first.keys()
+            except Exception:
+                return seq[0]
+            if "author_label" in keys:
+                for item in seq:
+                    if str(item["author_label"]) == "You":
+                        return item
+            return seq[0]
+
+        def fake_generate(agent_payload, prompt, **kwargs):
+            return "thanks for sharing this"
+
+        app_module.random.random = fake_random
+        app_module.random.choice = fake_choice
+        app_module.backend.generate = fake_generate
+        original_reply_chance = app_module.AUTO_ACTIVITY_REPLY_TO_COMMENT_CHANCE
+        app_module.AUTO_ACTIVITY_REPLY_TO_COMMENT_CHANCE = 1.0
+        try:
+            result = app_module.auto_activity_step()
+        finally:
+            app_module.random.random = original_random
+            app_module.random.choice = original_choice
+            app_module.backend.generate = original_generate
+            app_module.AUTO_ACTIVITY_REPLY_TO_COMMENT_CHANCE = original_reply_chance
+
+        self.assertIn("comment", result)
+
+        with app_module.DB_LOCK:
+            conn = app_module.db_connection()
+            nested = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE post_id = ? AND parent_comment_id = ? AND source IN ('community-auto-reply', 'community-auto')",
+                (post_id, target_comment_id),
+            ).fetchone()[0]
+            conn.close()
+        self.assertGreaterEqual(nested, 1)
+
     def test_threaded_comment_order_is_parent_then_children(self):
         feed = app_module.fetch_feed()
         self.assertGreaterEqual(len(feed), 1)

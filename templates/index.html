@@ -88,22 +88,35 @@
 
               <div class="comment-list">
                 {% for comment in post.comments %}
-                <p>
-                  {% for _ in range(comment.depth or 0) %}↳ {% endfor %}
-                  <strong>{{ comment.author_label }}:</strong> {{ comment.content }}
-                  <span class="meta">({{ comment.source }})</span>
-                </p>
-                <form method="post" action="{{ url_for('comment_reply', post_id=post.id, comment_id=comment.id) }}" class="stack">
-                  <textarea name="content" rows="1" placeholder="reply to this comment..."></textarea>
-                  <button type="submit" class="ghost">Reply</button>
-                </form>
+                <article class="comment-item {{ 'comment-user' if comment.author_label == 'You' else 'comment-ai' }} {{ 'comment-latest' if loop.last else '' }}" data-depth="{{ comment.depth or 0 }}">
+                  <p class="comment-meta">
+                    {% for _ in range(comment.depth or 0) %}↳ {% endfor %}
+                    <strong>{{ comment.author_label }}</strong>
+                    <span class="meta">{{ comment.created_at }}</span>
+                    <span class="comment-source">{{ comment.source }}</span>
+                  </p>
+                  <p class="comment-content">{{ comment.content }}</p>
+
+                  {% if loop.last %}
+                  <details class="reply-toggle">
+                    <summary>Reply to latest comment</summary>
+                    <form method="post" action="{{ url_for('comment_reply', post_id=post.id, comment_id=comment.id) }}" class="stack">
+                      <textarea name="content" rows="1" placeholder="reply to latest comment..."></textarea>
+                      <button type="submit" class="ghost">Send Reply</button>
+                    </form>
+                  </details>
+                  {% endif %}
+                </article>
                 {% endfor %}
               </div>
 
-              <form method="post" action="{{ url_for('comment', post_id=post.id) }}" class="stack">
-                <textarea name="content" rows="2" placeholder="comment on this post..."></textarea>
-                <button type="submit" class="ghost">Comment</button>
-              </form>
+              <details class="comment-toggle">
+                <summary>Comment on this post</summary>
+                <form method="post" action="{{ url_for('comment', post_id=post.id) }}" class="stack">
+                  <textarea name="content" rows="2" placeholder="comment on this post..."></textarea>
+                  <button type="submit" class="ghost">Send Comment</button>
+                </form>
+              </details>
             </article>
             {% endfor %}
           </div>
